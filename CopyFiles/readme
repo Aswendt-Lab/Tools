@@ -1,2 +1,2 @@
-Copy any type of files, which contain a string specified in a txt file. 
+Copy any type of files, which contain a string (name) specified in a txt file. 
 Open in terminal CopyGUI.py and follow instructions in the GUI. This will iteratively search for any file and folder containing the specified string (name) and copy it in the destination folder while maintaining the original folder structure. 

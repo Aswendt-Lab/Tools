@@ -11,7 +11,7 @@ def zip_files_in_chunks(directory, output_directory, chunk_size_gb, keep_structu
     part = 1
     temp_files = []
 
-    # Create output directory for zip parts
+    # Create output directory for zip parts if it doesn't exist
     os.makedirs(output_directory, exist_ok=True)
 
     # Get all files in the directory recursively, excluding .zip files
@@ -59,7 +59,7 @@ def zip_files_in_chunks(directory, output_directory, chunk_size_gb, keep_structu
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Zip files into equally sized chunks.')
     parser.add_argument('-i', '--input_directory', type=str, required=True, help='Directory containing files to zip.')
-    parser.add_argument('-o', '--output_directory', type=str, required=True, help='Directory to save zip parts.')
+    parser.add_argument('-o', '--output_directory', type=str, required=True, help='Directory to save zip parts. Can be the same as input directory.')
     parser.add_argument('-c', '--chunk_size', type=int, default=5, help='Maximum size of each zip part in GB.')
     parser.add_argument('-k', '--keep_structure', action='store_true', help='Keep the folder structure in the zip files.')
     

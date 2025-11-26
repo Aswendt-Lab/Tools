@@ -11,8 +11,8 @@ D-60590 Frankfurt am Main
 
 #!/usr/bin/env python3
 """
-Orientation- and color-aware label extractor.
-Same CLI/behavior as before: copies by default (no overwrite), or --rename.
+Yellow-card & orientation-robust label extractor.
+Default: COPY to <input>/renamed_copies (no overwrite). Use --rename to rename in place.
 
 Examples
 --------
@@ -76,8 +76,7 @@ def ocr_text_multi_rotation(img_bgr):
         pre = preprocess_for_ocr(r)
         toks = _tess_tokens(pre)
         if toks:
-            score = sum(c for _, c in toks)
-            best.append((score, toks))
+            best.append((sum(c for _, c in toks), toks))
     best.sort(key=lambda x: x[0], reverse=True)
     merged = []
     for _, toks in best[:2]:
@@ -85,52 +84,38 @@ def ocr_text_multi_rotation(img_bgr):
     return merged
 
 def order_points(pts):
-    # pts: 4x2
     rect = np.zeros((4,2), dtype="float32")
-    s = pts.sum(axis=1); rect[0] = pts[np.argmin(s)]  # top-left
-    rect[2] = pts[np.argmax(s)]                      # bottom-right
+    s = pts.sum(axis=1); rect[0] = pts[np.argmin(s)]
+    rect[2] = pts[np.argmax(s)]
     diff = np.diff(pts, axis=1)
-    rect[1] = pts[np.argmin(diff)]                   # top-right
-    rect[3] = pts[np.argmax(diff)]                   # bottom-left
+    rect[1] = pts[np.argmin(diff)]
+    rect[3] = pts[np.argmax(diff)]
     return rect
 
 def warp_from_box(img, box):
-    # box: 4x2 points from cv2.boxPoints(minAreaRect)
     rect = order_points(np.array(box, dtype="float32"))
     (tl, tr, br, bl) = rect
     widthA = np.linalg.norm(br - bl); widthB = np.linalg.norm(tr - tl)
     heightA = np.linalg.norm(tr - br); heightB = np.linalg.norm(tl - bl)
-    maxW = int(max(widthA, widthB))
-    maxH = int(max(heightA, heightB))
+    maxW = int(max(widthA, widthB)); maxH = int(max(heightA, heightB))
     dst = np.array([[0,0],[maxW-1,0],[maxW-1,maxH-1],[0,maxH-1]], dtype="float32")
     M = cv2.getPerspectiveTransform(rect, dst)
     warped = cv2.warpPerspective(img, M, (maxW, maxH), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-    # Ensure landscape orientation for OCR
     if warped.shape[0] > warped.shape[1]:
         warped = rotate_bound(warped, 90)
     return warped
 
 def yellow_card_tokens(frame_bgr):
-    """
-    Find yellow rectangles, warp them flat, and OCR them with multi-rotation.
-    Returns a list of tokens aggregated across all detected cards.
-    """
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
-
-    # fairly generous yellow range
     lower1 = np.array([15, 60, 80]); upper1 = np.array([40, 255, 255])
     mask = cv2.inRange(hsv, lower1, upper1)
-
-    # clean up
     kernel = np.ones((5,5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     H, W = frame_bgr.shape[:2]
     min_area = max(1500, int(0.0005 * H * W))
     tokens = []
-
     for c in contours:
         if cv2.contourArea(c) < min_area:
             continue
@@ -138,42 +123,79 @@ def yellow_card_tokens(frame_bgr):
         box = cv2.boxPoints(rect)
         warped = warp_from_box(frame_bgr, box)
         tokens.extend(ocr_text_multi_rotation(warped))
-
     return tokens
 
-# ---------- Parsing ----------
+# ---------- Parsing (improved ID reconstruction) ----------
 
-ID_REGEX   = re.compile(r"\b[A-Z]{1,4}(?:_[A-Z0-9]+){1,6}\b")
+# quick checks
+ID_REGEX_DIRECT = re.compile(r"\b[A-Z]{1,4}(?:_[A-Z0-9]{1,4}){2,6}\b")  # at least 2 underscores
+PIECE_REGEX = re.compile(r"^[A-Za-z0-9]{1,4}$")                         # token piece like 'GV','T3','12','10'
+
 COND_PATTS = [
     re.compile(r"\bBaseline\b", re.I),
     re.compile(r"\bPre\b", re.I),
     re.compile(r"\bPost\b", re.I),
     re.compile(r"\bControl\b", re.I),
-    re.compile(r"\bP\s*[_-]?\s*\d{1,3}\b", re.I),   # P20, P_22, P-5
-    re.compile(r"\bD\s*[_-]?\s*\d{1,3}\b", re.I),   # D1, D_14
-    re.compile(r"\bDay\s*[_-]?\s*\d{1,3}\b", re.I), # Day1, Day_7
-    re.compile(r"\bW\s*[_-]?\s*\d{1,2}\b", re.I),   # W2 (week)
+    re.compile(r"\bP\s*[_-]?\s*\d{1,3}\b", re.I),
+    re.compile(r"\bD\s*[_-]?\s*\d{1,3}\b", re.I),
+    re.compile(r"\bDay\s*[_-]?\s*\d{1,3}\b", re.I),
+    re.compile(r"\bW\s*[_-]?\s*\d{1,2}\b", re.I),
 ]
+
+def _reconstruct_ids_from_pieces(tokens):
+    """
+    Build candidates by joining contiguous pieces with underscores.
+    Enforce: >= 2 underscores and total length >= 9.
+    """
+    pieces = [t[0].replace("-", "_").replace("__","_") for t in tokens]
+    n = len(pieces)
+    cands = []
+    for i in range(n):
+        if not PIECE_REGEX.match(pieces[i]):
+            continue
+        # must start with letters to look like 'GV' or 'SP'
+        if not re.match(r"^[A-Z]{1,4}[A-Z0-9]*$", pieces[i], flags=re.I):
+            continue
+        cur = [pieces[i].upper()]
+        for j in range(i+1, min(i+7, n)):  # up to 6 more chunks
+            if PIECE_REGEX.match(pieces[j]):
+                cur.append(pieces[j].upper())
+                cand = "_".join(cur)
+                if cand.endswith("_"):
+                    continue
+                if cand.count("_") >= 2 and len(cand) >= 9:
+                    cands.append(cand)
+            else:
+                break
+    return cands
 
 def parse_labels(tokens):
     texts = [t[0] for t in tokens]
     joined = " ".join(texts)
 
-    # ID-like code (with underscores)
-    ids = ID_REGEX.findall(joined)
-    id_code = Counter(ids).most_common(1)[0][0] if ids else None
+    # 1) Direct ID matches (with underscores present in OCR)
+    ids = [m.group(0) for m in ID_REGEX_DIRECT.finditer(joined)]
 
-    # Condition: try patterns in priority order
+    # 2) Reconstruct IDs from split pieces (GV, T3, 1, 1 -> GV_T3_1_1)
+    ids.extend(_reconstruct_ids_from_pieces(tokens))
+
+    # keep only sane (>=9 chars) and uppercase
+    ids = [re.sub(r"[^A-Z0-9_]", "", i.upper()) for i in ids if len(i) >= 9]
+    id_code = None
+    if ids:
+        # prefer most underscores, then longest
+        ids.sort(key=lambda s: (s.count("_"), len(s)), reverse=True)
+        id_code = ids[0]
+
+    # Condition parsing (Baseline, P22, Day1, …)
     cond = None
     for patt in COND_PATTS:
         m = patt.search(joined)
         if m:
-            cond = m.group(0).replace(" ", "").replace("-", "").replace("__", "_")
-            cond = cond.replace("_", "")  # keep simple like P20, Day1
+            cond = m.group(0)
+            cond = cond.replace(" ", "").replace("-", "").replace("_", "")
             cond = cond.capitalize() if cond.lower() in {"baseline","pre","post","control"} else cond
             break
-
-    # Fallback: any short alnum token that looks like a tag (e.g., P20)
     if not cond:
         alnums = [t for t in texts if re.fullmatch(r"[A-Za-z]\d{1,3}", t)]
         if alnums:
@@ -211,10 +233,7 @@ def scan_video(path: Path, seconds=100, sample_every=1.0, save_frame_dir: Path |
         if not ok or frame is None:
             continue
 
-        # 1) Prefer OCR from detected yellow cards
         tokens_all = yellow_card_tokens(frame)
-
-        # 2) If nothing found, fall back to coarse crops & rotations
         if not tokens_all:
             h, w = frame.shape[:2]
             for x0f, x1f in [(0.00,0.33),(0.66,1.00),(0.0,1.0)]:
@@ -265,24 +284,18 @@ def unique_target(out_dir: Path, base: str, ext: str) -> Path:
 # ---------- Main CLI (unchanged) ----------
 
 def main():
-    ap = argparse.ArgumentParser(description="Extract labels (yellow-card robust) and create safe new names.")
+    ap = argparse.ArgumentParser(description="Extract labels (robust ID reconstruction) and create safe new names.")
     ap.add_argument("input_dir", type=Path, help="Folder containing videos")
-    ap.add_argument("--seconds", type=int, default=100, help="How many seconds to scan from the start (default: 100)")
-    ap.add_argument("--sample-every", dest="sample_every", type=float, default=1.0,
-                    help="Sample every N seconds (default: 1.0)")
-    ap.add_argument("--save-frames", dest="save_frames", type=Path, default=None,
-                    help="Folder to save the first good frame (optional)")
-    ap.add_argument("--extensions", nargs="+",
-                    default=[".mp4", ".avi", ".mov", ".mkv", ".m4v"],
-                    help="Video file extensions to include")
+    ap.add_argument("--seconds", type=int, default=100)
+    ap.add_argument("--sample-every", dest="sample_every", type=float, default=1.0)
+    ap.add_argument("--save-frames", dest="save_frames", type=Path, default=None)
+    ap.add_argument("--extensions", nargs="+", default=[".mp4", ".avi", ".mov", ".mkv", ".m4v"])
 
     mode = ap.add_mutually_exclusive_group()
-    mode.add_argument("--rename", action="store_true",
-                      help="Rename originals in place (non-overwriting).")
-    mode.add_argument("--copy", action="store_true",
-                      help="Copy to --out-dir (default behavior).")
-    ap.add_argument("--out-dir", type=Path, default=None,
-                    help="Output folder for copies (default: <input>/renamed_copies)")
+    mode.add_argument("--rename", action="store_true", help="Rename originals in place (non-overwriting).")
+    mode.add_argument("--copy", action="store_true", help="Copy to --out-dir (default).")
+
+    ap.add_argument("--out-dir", type=Path, default=None, help="Output folder for copies (default: <input>/renamed_copies)")
 
     args = ap.parse_args()
 
@@ -301,9 +314,7 @@ def main():
             continue
 
         print(f"[INFO] Processing: {p.name}")
-        new_base, saved = scan_video(
-            p, seconds=args.seconds, sample_every=args.sample_every, save_frame_dir=args.save_frames
-        )
+        new_base, saved = scan_video(p, seconds=args.seconds, sample_every=args.sample_every, save_frame_dir=args.save_frames)
 
         if new_base:
             if do_copy:

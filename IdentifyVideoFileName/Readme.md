@@ -20,11 +20,11 @@ Requires Xcode Command Line Tools.
 
 ```bash
 xcode-select --install   # if not installed
-swiftc -O VideoIdentFileName_v4_GW.swift -o VideoIdentFileName_v4_GW
+swiftc -O VideoIdentFileName_v6.swift -o VideoIdentFileName_v6
 ```
 ## Run (macOS)
 ```bash
-./VideoIdentFileName_v4_GW "/path/with spaces/Group1_nolabels" \
+./VideoIdentFileName_v6 "/path/with spaces/Group1_nolabels" \
   --mode subject_stage \
   --behavior Cylinder \
   --step 0.5 \

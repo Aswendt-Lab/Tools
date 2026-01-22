@@ -2,12 +2,30 @@ Scripts to identify labels printed on yellow sticky notes for video recordings o
 
 For the swift version run first 
 
+# VideoIdentFileName (Apple Vision OCR)
+
+Rename experiment videos by reading text on **yellow sticky notes** directly from the frames (runs locally on macOS using Apple’s Vision OCR).  
+Works well for patterns like:
+
+- **Stage**: `Baseline` or `P1..P60`
+- **Study ID**: e.g. `GV_T3_13_1`
+
+> ⚠️ Paths contain spaces? **Quote them**. Multiline commands? Put a `\` at the **end of each line**.
+
+---
+
+## Build (macOS)
+
+Requires Xcode Command Line Tools.
+
+```bash
+xcode-select --install   # if not installed
 swiftc -O VideoIdentFileName_v4_GW.swift -o VideoIdentFileName_v4_GW
-
-and then
-
-./VideoIdentFileName_v4_GW "[input path]" \              
-  --mode subject_stage\
-  --behavior Gridwalk\
-  --step 0.5\
-  --out-dir "[output path]"
+```
+## Run (macOS)
+```bash
+./VideoIdentFileName_v4_GW "/path/with spaces/Group1_nolabels" \
+  --mode subject_stage \
+  --behavior Cylinder \
+  --step 0.5 \
+  --out-dir "/path/with spaces/Group1"

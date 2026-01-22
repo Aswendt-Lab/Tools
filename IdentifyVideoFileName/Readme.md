@@ -7,7 +7,7 @@ swiftc -O VideoIdentFileName_v4_GW.swift -o VideoIdentFileName_v4_GW
 and then
 
 ./VideoIdentFileName_v4_GW "[input path]" \              
-  --mode subject_stage \
-  --behavior Gridwalk \
-  --step 0.5 \
+  --mode subject_stage\
+  --behavior Gridwalk\
+  --step 0.5\
   --out-dir "[output path]"

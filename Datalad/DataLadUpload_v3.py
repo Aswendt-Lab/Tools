@@ -79,7 +79,7 @@ if __name__ == "__main__":
 
         # 2️⃣ push ONLY this folder
         os.system(
-            f'datalad push --to origin --path "{path}"'
+            f'datalad push --to origin "{path}"'
         )
 
         # 3️⃣ drop ONLY this folder (safe)

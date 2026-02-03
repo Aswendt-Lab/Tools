@@ -1,13 +1,12 @@
 """
-Created on Mon Nov 22 17:28:14 2021
+Created on Mon Nov 22 17:28 2021
 @author: kalantaria
-Modified: on Mon Feb 02 11:25:14 2026
-@authro: maswendt
+Modified: on Mon Feb 03 13:08 2026
+@authors: maswendt, ChatGPT
 sequential datalad uploader
-- operate only on folders >= 5 GB
-- save per folder
-- push once at the end
-- drop only after push (safe git-annex workflow)
+- operates on folders >= 5 GB
+- per-folder: save -> push -> drop
+- safe git-annex behavior
 """
 
 import argparse
@@ -25,22 +24,21 @@ def get_folder_size(path):
     return total_size  # bytes
 
 
-#%% Command line interface
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
-        description='Sequential datalad uploader for folders >= 5GB'
+        description="Per-folder DataLad uploader (>= 5GB)"
     )
     parser.add_argument(
-        '-i', '--initial_path',
+        "-i", "--initial_path",
         required=True,
-        help='Path to the root dataset'
+        help="Path to dataset root"
     )
     parser.add_argument(
-        '-d', '--depth',
+        "-d", "--depth",
         required=True,
         type=int,
-        help='Depth to search for subdirectories'
+        help="Folder depth to search"
     )
     args = parser.parse_args()
 
@@ -49,55 +47,44 @@ if __name__ == "__main__":
 
     MIN_SIZE_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB
 
-    print("Hello!")
-    print('------------------------------------------------------------')
-    print('Uploading folders >= 5 GB')
-    print(f'Dataset root: {initial_path}')
-    print('------------------------------------------------------------')
+    print("------------------------------------------------------------")
+    print(f"Dataset root: {initial_path}")
+    print("------------------------------------------------------------")
 
     # ---------- build glob pattern ----------
     search_path = initial_path
     for _ in range(depth):
         search_path = os.path.join(search_path, "*")
 
-    candidates = glob.glob(search_path, recursive=True)
-    print(f"Total paths found: {len(candidates)}")
-    print('------------------------------------------------------------')
+    candidates = sorted(glob.glob(search_path))
 
-    saved_anything = False
-
-    # ---------- save qualifying folders ----------
     for path in candidates:
 
         if not os.path.isdir(path):
             continue
 
         folder_size = get_folder_size(path)
-
         if folder_size < MIN_SIZE_BYTES:
-            print(f"Skipping (too small): {path}")
             continue
 
         size_gb = folder_size / (1024 ** 3)
         rel_path = os.path.relpath(path, initial_path)
 
-        print(f"\nSaving folder: {rel_path} ({size_gb:.2f} GB)")
+        print(f"\nProcessing folder: {rel_path} ({size_gb:.2f} GB)")
 
+        # 1️⃣ save
         os.system(
             f'datalad save "{path}" -m "Add folder: {rel_path}"'
         )
 
-        saved_anything = True
+        # 2️⃣ push ONLY this folder
+        os.system(
+            f'datalad push --to origin --path "{path}"'
+        )
 
-    # ---------- push once ----------
-    if saved_anything:
-        print('\nPushing dataset to origin...')
-        os.system('datalad push --to origin')
+        # 3️⃣ drop ONLY this folder (safe)
+        os.system(
+            f'datalad drop --what filecontent --recursive "{path}"'
+        )
 
-        print('Dropping file content locally (safe)...')
-        os.system('datalad drop --what filecontent --recursive .')
-    else:
-        print('\nNo folders met the size criterion. Nothing to push.')
-
-    print('\n--------------------- FINISHED ------------------------------')
-    print('------------------------------------------------------------')
+    print("\n--------------------- FINISHED ------------------------------")

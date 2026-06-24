@@ -1,8 +1,9 @@
-// VideoIdentFileName_v1.8-white-handwritten.swift
+// VideoIdentFileName.swift
 // Recursive video renamer using Apple Vision OCR.
 // Default output: <StudyID>_<Stage>_<Behavior>.mp4
-// v1.8: improves white/light handwritten label OCR, accepts prefix-less IDs such as T3_73_7,
-//       prepends a configurable default prefix, and adds focused lower-left label crops.
+// Updated: protects already-correct filenames before OCR, improves white/light handwritten
+//          label OCR, accepts prefix-less IDs such as T3_73_7, and prepends a configurable
+//          default prefix.
 // Example: SP_T1_11_2_P11_Gridwalk.mp4
 //
 // Main usage:
@@ -198,19 +199,36 @@ func uniqueBasename(in dir: URL, preferred name: String) -> String {
     return "\(stem)_\(UUID().uuidString.prefix(6))" + (ext.isEmpty ? "" : ".\(ext)")
 }
 
+func normalizedFilenameStem(_ url: URL) -> String {
+    return url.deletingPathExtension().lastPathComponent
+        .uppercased()
+        .replacingOccurrences(of: "[^A-Z0-9]+", with: "_", options: .regularExpression)
+        .replacingOccurrences(of: "_+", with: "_", options: .regularExpression)
+        .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+}
+
+func filenameContainsBehavior(_ url: URL, behavior: String) -> Bool {
+    let name = normalizedFilenameStem(url)
+    let b = behavior.uppercased()
+        .replacingOccurrences(of: "[^A-Z0-9]+", with: "_", options: .regularExpression)
+        .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+
+    guard !b.isEmpty, b != "UNKNOWN" else { return false }
+    return name == b || name.contains("_\(b)") || name.contains("\(b)_")
+}
+
 func looksAlreadyNamed(_ url: URL) -> Bool {
-    // A file is only "already named" if it follows the full required format:
+    // Strict fallback check for the full required format:
     //   StudyID_Day_Test.mp4
     // Examples:
     //   GV_T3_129_Baseline_Cylinder.mp4
     //   GV_T3_12_1_P7_Gridwalk.mp4
     // Baseline_Cylinder_01.mp4 is NOT considered correctly named because it lacks StudyID.
-    let name = url.deletingPathExtension().lastPathComponent.uppercased()
+    let name = normalizedFilenameStem(url)
 
     let patterns = [
-        #"^[A-Z]{2,4}_[A-Z]\d+_\d+_\d+_(P\d{1,2}|BASELINE)_[A-Z0-9]+(_\d{2})?$"#,
-        #"^[A-Z]{2,4}_[A-Z]\d+_\d+_(P\d{1,2}|BASELINE)_[A-Z0-9]+(_\d{2})?$"#,
-        #"^[A-Z]{2,4}_\d+_\d+_\d+_(P\d{1,2}|BASELINE)_[A-Z0-9]+(_\d{2})?$"#
+        #"^[A-Z]{2,4}_T\d+_\d+_\d+_(P\d{1,2}|BASELINE)_[A-Z0-9]+(_\d+)?$"#,
+        #"^[A-Z]{2,4}_T\d+_\d+_(P\d{1,2}|BASELINE)_[A-Z0-9]+(_\d+)?$"#
     ]
 
     for pat in patterns {
@@ -224,6 +242,18 @@ func looksAlreadyNamed(_ url: URL) -> Bool {
     return false
 }
 
+func isAlreadyCompleteFilename(_ url: URL, behavior: String, prefixes: [String], maxP: Int) -> Bool {
+    // Conservative early skip used BEFORE OCR. If the filename already contains:
+    //   - a valid StudyID,
+    //   - a valid stage/day,
+    //   - the behavior name,
+    // then OCR must not be used to create a new copy. This protects files such as
+    // GV_T3_12_3_Baseline_Cylinder 3.mp4 from being changed by a bad OCR read.
+    return filenameSubject(url, prefixes: prefixes) != nil
+        && filenameStage(url, maxP: maxP) != nil
+        && filenameContainsBehavior(url, behavior: behavior)
+}
+
 func regexFirst(_ pattern: String, in text: String) -> String? {
     let re = try! NSRegularExpression(pattern: pattern)
     let r = NSRange(location: 0, length: text.utf16.count)
@@ -234,19 +264,22 @@ func regexFirst(_ pattern: String, in text: String) -> String? {
 func filenameSubject(_ url: URL, prefixes: [String]) -> String? {
     // Extracts a StudyID from the current filename, if present.
     // This is treated as ground truth to avoid OCR changing GV_T3_12_1 into GV_T3_129 etc.
-    let name = url.deletingPathExtension().lastPathComponent.uppercased()
+    // Spaces, hyphens and duplicate-copy suffixes are normalized before matching.
+    let name = normalizedFilenameStem(url)
     let allowed = prefixes.isEmpty ? ["GV", "SP", "SR", "PB", "CC"] : prefixes
     let prefixGroup = allowed.map { NSRegularExpression.escapedPattern(for: $0) }.joined(separator: "|")
 
+    // Prefer the more specific 4-part subject before the 3-part subject.
     let patterns = [
-        #"\b("# + prefixGroup + #")_[A-Z]\d+_\d+_\d+\b"#,
-        #"\b("# + prefixGroup + #")_[A-Z]\d+_\d+\b"#,
-        #"\b("# + prefixGroup + #")_\d+_\d+_\d+\b"#
+        "(?:^|_)((?:\(prefixGroup))_T\\d+_\\d+_\\d+)(?=_|$)",
+        "(?:^|_)((?:\(prefixGroup))_T\\d+_\\d+)(?=_|$)"
     ]
 
     for pat in patterns {
-        if let hit = regexFirst(pat, in: name) {
-            return hit
+        let re = try! NSRegularExpression(pattern: pat)
+        let r = NSRange(location: 0, length: name.utf16.count)
+        if let m = re.firstMatch(in: name, options: [], range: r), m.numberOfRanges > 1 {
+            return (name as NSString).substring(with: m.range(at: 1))
         }
     }
 
@@ -486,8 +519,8 @@ func normalizeSubject(_ text: String, prefixes: [String], defaultPrefix: String)
     // core, for example "T3-73-7" or "T3_73_7", without the project prefix.
     // Accept that form and prepend the default prefix, usually GV.
     let prefixlessPatterns = [
-        #"(?:^|_)([A-Z]\d+_\d+_\d+)(?=_|$)"#,
-        #"(?:^|_)([A-Z]\d+_\d+)(?=_|$)"#
+        #"(?:^|_)(T\d+_\d+_\d+)(?=_|$)"#,
+        #"(?:^|_)(T\d+_\d+)(?=_|$)"#
     ]
 
     for pat in prefixlessPatterns {
@@ -523,9 +556,8 @@ func normalizeSubject(_ text: String, prefixes: [String], defaultPrefix: String)
     let candidate = prefix + "_" + rest
 
     let patterns = [
-        #"^[A-Z]{2,4}_[A-Z]\d+_\d+_\d+$"#,
-        #"^[A-Z]{2,4}_[A-Z]\d+_\d+$"#,
-        #"^[A-Z]{2,4}_\d+_\d+_\d+$"#
+        #"^[A-Z]{2,4}_T\d+_\d+_\d+$"#,
+        #"^[A-Z]{2,4}_T\d+_\d+$"#
     ]
 
     for pat in patterns {
@@ -799,14 +831,19 @@ func updateVotes(from cg: CGImage, cfg: Config, stageVotes: inout [String:Int], 
 // ====================== Per-video pipeline ======================
 
 func processVideo(at url: URL, cfg: Config) {
-    if !cfg.includeNamed && looksAlreadyNamed(url) {
+    let behavior = inferBehavior(from: url, override: cfg.behaviorOverride)
+    let subjectFromFilename = filenameSubject(url, prefixes: cfg.subjectPrefixes)
+    let stageFromFilename = filenameStage(url, maxP: cfg.maxP)
+
+    if !cfg.includeNamed && isAlreadyCompleteFilename(url, behavior: behavior, prefixes: cfg.subjectPrefixes, maxP: cfg.maxP) {
         print("[SKIP] Already named: \(url.lastPathComponent)")
         return
     }
 
-    let behavior = inferBehavior(from: url, override: cfg.behaviorOverride)
-    let subjectFromFilename = filenameSubject(url, prefixes: cfg.subjectPrefixes)
-    let stageFromFilename = filenameStage(url, maxP: cfg.maxP)
+    if !cfg.includeNamed && looksAlreadyNamed(url) {
+        print("[SKIP] Already named: \(url.lastPathComponent)")
+        return
+    }
 
     let asset = AVURLAsset(url: url)
     let gen = AVAssetImageGenerator(asset: asset)

@@ -1,7 +1,7 @@
 """"
-Created on 15.05.2026
+Created on  26.08.2026
 
-@authors: Markus Aswendt, ChatGPT v5.4
+@authors: Markus Aswendt, ChatGPT
 Department of Neurology
 University Hospital Frankfurt
 Theodor-Stern-Kai 7
@@ -14,6 +14,7 @@ D-60590 Frankfurt am Main
 import argparse
 import contextlib
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -52,6 +53,212 @@ FILLER_ONLY_WORDS = {
     "ja", "jaja", "genau", "äh", "ähm", "hmhm", "nein", "also",
     "thank", "you", "thanks", "danke", "bitte",
 }
+
+
+# -----------------------------------------------------------------------------
+# Model presets
+# -----------------------------------------------------------------------------
+# Keep these presets conservative: all transcription entries use the same
+# mlx-whisper backend as the validated pipeline below.
+WHISPER_MODEL_PRESETS = {
+    # Recommended default for multilingual meetings on Apple Silicon.
+    "auto": "mlx-community/whisper-large-v3-turbo",
+    # Highest-quality validated option; slower and larger.
+    "accurate": "mlx-community/whisper-large-v3-mlx",
+    # Good quality/speed compromise.
+    "balanced": "mlx-community/whisper-large-v3-turbo",
+    # Faster option for large batches.
+    "fast": "mlx-community/whisper-medium-mlx",
+}
+
+# Summary presets do not download models automatically. They choose among
+# models already installed in Ollama, in preference order.
+OLLAMA_MODEL_PREFERENCES = {
+    "auto": [
+        "qwen3:8b",
+        "gemma3:12b",
+        "llama3.1:8b",
+        "gemma3:4b",
+        "llama3.2:3b",
+    ],
+    "accurate": [
+        "qwen3:14b",
+        "gemma3:12b",
+        "qwen3:8b",
+        "llama3.1:8b",
+    ],
+    "balanced": [
+        "qwen3:8b",
+        "llama3.1:8b",
+        "gemma3:4b",
+        "llama3.2:3b",
+    ],
+    "fast": [
+        "llama3.2:3b",
+        "gemma3:4b",
+        "qwen3:4b",
+        "qwen3:1.7b",
+    ],
+}
+
+
+def huggingface_cache_root() -> Path:
+    """Return the Hugging Face hub cache root used for local model checks."""
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        return Path(hf_home).expanduser() / "hub"
+
+    xdg_cache = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache:
+        return Path(xdg_cache).expanduser() / "huggingface" / "hub"
+
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def hf_repo_cache_dir(repo_id: str) -> Path:
+    """Map 'org/model' to the standard Hugging Face hub cache directory."""
+    return huggingface_cache_root() / f"models--{repo_id.replace('/', '--')}"
+
+
+def find_cached_hf_snapshot(repo_id: str) -> Optional[Path]:
+    """Return a usable cached snapshot path, or None if the model is not cached."""
+    repo_dir = hf_repo_cache_dir(repo_id)
+    snapshots_dir = repo_dir / "snapshots"
+
+    if not snapshots_dir.exists():
+        return None
+
+    snapshots = [p for p in snapshots_dir.iterdir() if p.is_dir()]
+    if not snapshots:
+        return None
+
+    # Prefer the most recently modified snapshot.
+    snapshots.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return snapshots[0]
+
+
+def resolve_whisper_model(selection: str, offline: bool = False) -> str:
+    """
+    Resolve a transcription preset or custom model/path.
+
+    If --offline is active, Hugging Face repository IDs must already exist in
+    the local cache and the concrete snapshot path is passed to mlx-whisper.
+    """
+    selected = WHISPER_MODEL_PRESETS.get(selection, selection)
+
+    local_path = Path(selected).expanduser()
+    if local_path.exists():
+        return str(local_path.resolve())
+
+    if "/" in selected:
+        cached_snapshot = find_cached_hf_snapshot(selected)
+        if offline:
+            if cached_snapshot is None:
+                raise RuntimeError(
+                    f"Whisper model is not available locally: {selected}\n"
+                    "Download it once while online or choose another cached model."
+                )
+            return str(cached_snapshot)
+
+    return selected
+
+
+def get_installed_ollama_models(ollama_url: str) -> List[str]:
+    """Return model names currently installed in the local Ollama instance."""
+    try:
+        response = requests.get(f"{ollama_url}/api/tags", timeout=5)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"Could not query local Ollama at {ollama_url}. "
+            "Make sure Ollama is running."
+        ) from exc
+
+    models = response.json().get("models", [])
+    names = []
+    for model in models:
+        name = model.get("name") or model.get("model")
+        if name:
+            names.append(name)
+    return names
+
+
+def _ollama_name_matches(installed: str, requested: str) -> bool:
+    """Allow matching 'model:tag' while tolerating Ollama's explicit latest tag."""
+    if installed == requested:
+        return True
+    if installed == f"{requested}:latest":
+        return True
+    if requested == f"{installed}:latest":
+        return True
+    return False
+
+
+def resolve_ollama_model(selection: str, ollama_url: str) -> str:
+    """
+    Resolve a summary preset using only models already installed in Ollama.
+
+    Custom model names are accepted, but must also be installed locally.
+    """
+    installed = get_installed_ollama_models(ollama_url)
+
+    if not installed:
+        raise RuntimeError(
+            "No Ollama models are installed. Install one first, e.g. "
+            "'ollama pull llama3.1:8b'."
+        )
+
+    if selection in OLLAMA_MODEL_PREFERENCES:
+        for preferred in OLLAMA_MODEL_PREFERENCES[selection]:
+            for candidate in installed:
+                if _ollama_name_matches(candidate, preferred):
+                    return candidate
+
+        # Preset fallback: prefer a locally installed general text model rather
+        # than failing simply because its name is not in our preference table.
+        return installed[0]
+
+    for candidate in installed:
+        if _ollama_name_matches(candidate, selection):
+            return candidate
+
+    raise RuntimeError(
+        f"Requested Ollama model is not installed locally: {selection}\n"
+        f"Installed models: {', '.join(installed)}"
+    )
+
+
+def print_model_status(ollama_url: str) -> None:
+    """Print local transcription cache and Ollama model status."""
+    print("Model status")
+    print("============")
+    print()
+    print("Transcription presets:")
+
+    for preset, repo_id in WHISPER_MODEL_PRESETS.items():
+        snapshot = find_cached_hf_snapshot(repo_id)
+        state = "cached" if snapshot else "not cached"
+        print(f"  {preset:9s} {repo_id} [{state}]")
+
+    print()
+    print("Installed Ollama models:")
+    try:
+        installed = get_installed_ollama_models(ollama_url)
+        if installed:
+            for model in installed:
+                print(f"  - {model}")
+        else:
+            print("  (none installed)")
+    except RuntimeError as exc:
+        print(f"  unavailable: {exc}")
+
+    print()
+    print("Preset behavior:")
+    print("  --model auto       -> Whisper Large V3 Turbo")
+    print("  --model accurate   -> Whisper Large V3")
+    print("  --model balanced   -> Whisper Large V3 Turbo")
+    print("  --model fast       -> Whisper Medium")
+    print("  --summary-model ... selects only from locally installed Ollama models")
 
 
 def require_apple_silicon() -> None:
@@ -1496,7 +1703,7 @@ def process_recording_job(
 
     transcript_segments = transcribe_audio(
         wav_path=wav_path,
-        whisper_model=args.whisper_model,
+        whisper_model=args.resolved_whisper_model,
         language=args.language,
     )
 
@@ -1535,7 +1742,7 @@ def process_recording_job(
     else:
         summary = summarize_with_ollama(
             transcript_text=transcript_text,
-            ollama_model=args.ollama_model,
+            ollama_model=args.resolved_ollama_model,
             ollama_url=args.ollama_url,
             max_chars_per_chunk=args.max_chars_per_summary_chunk,
         )
@@ -1569,7 +1776,11 @@ def main() -> None:
 
     parser.add_argument(
         "input_path",
-        help="Path to one video/audio file or to a folder containing recording subfolders.",
+        nargs="?",
+        help=(
+            "Path to one video/audio file or to a folder containing recording subfolders. "
+            "May be omitted when using --check-models."
+        ),
     )
 
     parser.add_argument(
@@ -1629,13 +1840,39 @@ def main() -> None:
     )
 
     parser.add_argument(
-        "--whisper-model",
-        default="mlx-community/whisper-large-v3-mlx",
+        "--model",
+        default="auto",
         help=(
-            "MLX Whisper model or local model path. Examples: "
-            "mlx-community/whisper-small-mlx, "
-            "mlx-community/whisper-medium-mlx, "
-            "mlx-community/whisper-large-v3-mlx"
+            "Transcription model preset or custom MLX Whisper model/path. "
+            "Presets: auto, accurate, balanced, fast. "
+            "Default: auto (Whisper Large V3 Turbo)."
+        ),
+    )
+
+    parser.add_argument(
+        "--whisper-model",
+        default=None,
+        help=(
+            "Backward-compatible alias for --model. If supplied, this value takes "
+            "precedence over --model."
+        ),
+    )
+
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help=(
+            "Do not allow transcription model downloads. Repository models must "
+            "already be present in the local Hugging Face cache."
+        ),
+    )
+
+    parser.add_argument(
+        "--check-models",
+        action="store_true",
+        help=(
+            "Show cached Whisper preset models and locally installed Ollama models, "
+            "then exit. No meeting is processed."
         ),
     )
 
@@ -1674,9 +1911,21 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--summary-model",
+        default="auto",
+        help=(
+            "Summary model preset or exact locally installed Ollama model. "
+            "Presets: auto, accurate, balanced, fast. Default: auto."
+        ),
+    )
+
+    parser.add_argument(
         "--ollama-model",
-        default="llama3.1:8b",
-        help="Local Ollama model for summarization.",
+        default=None,
+        help=(
+            "Backward-compatible alias for --summary-model. If supplied, this value "
+            "takes precedence over --summary-model."
+        ),
     )
 
     parser.add_argument(
@@ -1701,6 +1950,38 @@ def main() -> None:
     args = parser.parse_args()
 
     require_apple_silicon()
+
+    if args.check_models:
+        print_model_status(args.ollama_url)
+        return
+
+    if not args.input_path:
+        parser.error("input_path is required unless --check-models is used")
+
+    # Backward-compatible aliases take precedence when explicitly supplied.
+    whisper_selection = args.whisper_model or args.model
+    summary_selection = args.ollama_model or args.summary_model
+
+    args.resolved_whisper_model = resolve_whisper_model(
+        whisper_selection,
+        offline=args.offline,
+    )
+
+    if args.skip_summary:
+        args.resolved_ollama_model = None
+    else:
+        args.resolved_ollama_model = resolve_ollama_model(
+            summary_selection,
+            args.ollama_url,
+        )
+
+    print("Selected models:")
+    print(f"  Transcription: {args.resolved_whisper_model}")
+    if args.skip_summary:
+        print("  Summary:       skipped")
+    else:
+        print(f"  Summary:       {args.resolved_ollama_model}")
+    print()
 
     input_path = Path(args.input_path).expanduser().resolve()
     batch_out_root = Path(args.out_dir).expanduser().resolve() if args.out_dir else None
@@ -1734,6 +2015,9 @@ def main() -> None:
     if args.dry_run:
         print()
         print("Dry run. No files will be processed.")
+        print(f"Transcription model: {args.resolved_whisper_model}")
+        if not args.skip_summary:
+            print(f"Summary model:       {args.resolved_ollama_model}")
         for job in jobs:
             status = "SKIP exists" if transcript_already_exists(job.output_dir, job.base_name) and not args.force else "PROCESS"
             print(f"[{status}]")

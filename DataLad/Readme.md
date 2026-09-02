@@ -4,28 +4,28 @@ Utilities for uploading, preparing, checking, and comparing DataLad/git-annex da
 
 ## Upload scripts
 
-`DataLadUpload_v1.py` and `v2.py` are historical upload workflows. `DataLadUpload_v3.py` is the current sequential uploader. It finds folders at an exact depth below a dataset root, processes only folders of at least 5 GiB, and performs `datalad save`, `datalad push --to origin`, then `datalad drop --what filecontent --recursive`.
+`DataLadUpload.py` is the current sequential uploader. It finds folders at an exact depth below a dataset root, processes only folders of at least 5 GiB, and performs `datalad save`, `datalad push --to origin`, then `datalad drop --what filecontent --recursive`. Older upload versions remain available in Git history.
 
 ```bash
-python DataLadUpload_v3.py -i /path/to/dataset -d 2
+python DataLadUpload.py -i /path/to/dataset -d 2
 ```
 
 The depth is the number of wildcard directory levels below the initial path. Processing aborts on the first failed save, push, or drop.
 
 ## Stepwise workflows
 
-`Datalad_stepwise_v5.sh` discovers immediate child datasets and interactively runs either:
+`Datalad_stepwise.sh` discovers immediate child datasets and interactively runs either:
 
 - mode A: sequential `get` then `unlock` for each file; or
 - mode B: `save`, `push`, then forced `drop`.
 
-Its fixed batch size is currently 100 files.
+It prompts for a batch size in mode A.
 
 ```bash
-./Datalad_stepwise_v5.sh /path/containing/datasets
+./Datalad_stepwise.sh /path/containing/datasets
 ```
 
-`Datalad_stepwise_v6.sh` implements the same modes but prompts for the batch size. `Datalad_stepwise_v2.sh` is an older project-specific script with a hard-coded relative base directory and should be reviewed before use.
+Older stepwise versions remain available in Git history.
 
 ## Inspection and comparison
 

@@ -46,9 +46,9 @@ Important options supported by the current source:
 
 ## Historical Python tools
 
-- `VideoIdentFileName_v1.0.py`: recursive yellow-label detection; renames in place unless `--dry-run` is used.
-- `VideoIdentFileName_v1.1.py`: scans only immediate input files and optionally renames with `--rename`.
-- `VideoIdentFileName_v1.2_RB.py`: orientation-robust Rotating Beam variant; copies by default to `renamed_copies/`, or renames with `--rename`.
-- `VideoIdentFileName_v1.3_CY.py`: yellow-card/Cylinder variant with optional `--behavior`; copies by default.
+- `VideoIdentFileName_tesseract_recursive.py`: recursive yellow-label detection; renames in place unless `--dry-run` is used.
+- `VideoIdentFileName_tesseract_labels.py`: scans only immediate input files and optionally renames with `--rename`.
+- `VideoIdentFileName_rotating_beam.py`: orientation-robust Rotating Beam variant; copies by default to `renamed_copies/`, or renames with `--rename`.
+- `VideoIdentFileName_cylinder.py`: yellow-card/Cylinder variant with optional `--behavior`; copies by default.
 
 Python variants require OpenCV, NumPy, pytesseract, and a Tesseract installation. Inspect `--help` for the exact interface of a selected version. Example videos and compiled binaries are local-only and excluded from Git.

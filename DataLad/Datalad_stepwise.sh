@@ -3,7 +3,7 @@
 set +e  # continue on errors; process remaining files/datasets
 
 # Usage:
-#   ./Datalad_stepwise_v5.sh [PARENT_DIR]
+#   ./Datalad_stepwise.sh [PARENT_DIR]
 #
 # PARENT_DIR should contain one or more DataLad datasets as immediate subdirectories.
 # The script lets you:
@@ -23,7 +23,7 @@ set +e  # continue on errors; process remaining files/datasets
 #   - includes both regular files and symlinks, because annexed content is often symlinked
 
 PARENT_DIR="${1:-.}"
-BATCH_SIZE=100
+BATCH_SIZE=""
 
 if [ ! -d "$PARENT_DIR" ]; then
     echo "ERROR: Parent directory not found: $PARENT_DIR"
@@ -95,6 +95,28 @@ ask_mode_for_dataset() {
     done
 }
 
+ask_batch_size() {
+    local total_files="$1"
+
+    echo
+    echo "======================================"
+    echo "Batch size for Mode A"
+    echo "Choose how many files to process before pausing."
+    echo "Enter a number from 1 to $total_files"
+    echo "Use $total_files to process all files without intermediate pauses."
+    echo "======================================"
+
+    local input
+    while true; do
+        read -rp "Batch size [1-$total_files]: " input
+        if [[ "$input" =~ ^[0-9]+$ ]] && [ "$input" -ge 1 ] && [ "$input" -le "$total_files" ]; then
+            BATCH_SIZE="$input"
+            return 0
+        fi
+        echo "Invalid batch size. Please enter a number from 1 to $total_files."
+    done
+}
+
 collect_all_files() {
     local dataset_root="$1"
     find "$dataset_root" \
@@ -151,7 +173,6 @@ process_mode_a() {
     echo "MODE A: datalad get + unlock"
     echo "Dataset: $(basename "$dataset_root")"
     echo "Scope: all files in dataset"
-    echo "Batch size: $BATCH_SIZE"
     echo "======================================"
 
     load_files_into_array "$dataset_root" files
@@ -162,6 +183,10 @@ process_mode_a() {
     fi
 
     echo "Found ${#files[@]} files/symlinks to process"
+
+    ask_batch_size "${#files[@]}"
+
+    echo "Batch size set to: $BATCH_SIZE"
 
     local file relpath
     for file in "${files[@]}"; do

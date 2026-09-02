@@ -4,9 +4,8 @@ Local meeting transcription, approximate speaker diarization, and optional Ollam
 
 ## Scripts
 
-- `MeetingTranscriber_v1.py`: first single-recording pipeline retained for reproducibility.
-- `MeetingTranscriber_v2.py`: current single-recording pipeline with improved chunking and repetition filtering.
-- `MeetingTranscriber_v2_batch.py`: recommended batch workflow; recursively discovers recordings, prefers separate Zoom audio where available, skips existing transcripts, supports model presets and offline operation, and continues after individual failures.
+- `MeetingTranscriber.py`: current single-recording pipeline with improved chunking and repetition filtering.
+- `MeetingTranscriber_batch.py`: recommended batch workflow; recursively discovers recordings, prefers separate Zoom audio where available, skips existing transcripts, supports model presets and offline operation, and continues after individual failures. The removed first version remains available in Git history.
 
 ## Requirements
 
@@ -25,7 +24,7 @@ ollama pull llama3.1:8b
 ## Single recording
 
 ```bash
-python MeetingTranscriber_v2.py /path/to/meeting.mp4 \
+python MeetingTranscriber.py /path/to/meeting.mp4 \
   --out-dir /path/to/output \
   --language de \
   --min-speakers 2 \
@@ -39,13 +38,13 @@ Use `--skip-summary` to produce transcripts without Ollama. Supported inputs inc
 Preview discovery first:
 
 ```bash
-python MeetingTranscriber_v2_batch.py /path/to/recordings --language de --dry-run
+python MeetingTranscriber_batch.py /path/to/recordings --language de --dry-run
 ```
 
 Then process:
 
 ```bash
-python MeetingTranscriber_v2_batch.py /path/to/recordings \
+python MeetingTranscriber_batch.py /path/to/recordings \
   --language de \
   --model auto \
   --summary-model auto \

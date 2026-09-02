@@ -1,4 +1,4 @@
-// VideoIdentFileName_v1.4.swift
+// VideoIdentFileName.swift
 // Recursive video renamer using Apple Vision OCR.
 // Default output: <StudyID>_<Stage>_<Behavior>.mp4
 // Example: SP_T1_11_2_P11_Gridwalk.mp4

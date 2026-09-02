@@ -1,9 +1,6 @@
-// VideoIdentFileName.swift
+// VideoIdentFileName_v1.4.swift
 // Recursive video renamer using Apple Vision OCR.
 // Default output: <StudyID>_<Stage>_<Behavior>.mp4
-// Updated: protects already-correct filenames before OCR, improves white/light handwritten
-//          label OCR, accepts prefix-less IDs such as T3_73_7, and prepends a configurable
-//          default prefix.
 // Example: SP_T1_11_2_P11_Gridwalk.mp4
 //
 // Main usage:
@@ -30,7 +27,6 @@ struct Config {
     let includeNamed: Bool
     let maxP: Int
     let subjectPrefixes: [String]
-    let defaultPrefix: String
     let csv: URL?
     let debugDir: URL?
     let debugLimit: Int
@@ -92,10 +88,6 @@ func parseArgs() -> Config? {
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
         .filter { !$0.isEmpty }
 
-    let defaultPrefix = (read("--default-prefix", def: subjectPrefixes.first ?? "GV") ?? "GV")
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-        .uppercased()
-
     let csv = read("--csv").flatMap { URL(fileURLWithPath: $0) }
     let debugDir = read("--debug-dir").flatMap { URL(fileURLWithPath: $0) }
     let debugLimit = Int(read("--debug-limit", def: "20") ?? "20") ?? 20
@@ -113,7 +105,6 @@ func parseArgs() -> Config? {
         includeNamed: includeNamed,
         maxP: maxP,
         subjectPrefixes: subjectPrefixes,
-        defaultPrefix: defaultPrefix,
         csv: csv,
         debugDir: debugDir,
         debugLimit: debugLimit,
@@ -199,36 +190,13 @@ func uniqueBasename(in dir: URL, preferred name: String) -> String {
     return "\(stem)_\(UUID().uuidString.prefix(6))" + (ext.isEmpty ? "" : ".\(ext)")
 }
 
-func normalizedFilenameStem(_ url: URL) -> String {
-    return url.deletingPathExtension().lastPathComponent
-        .uppercased()
-        .replacingOccurrences(of: "[^A-Z0-9]+", with: "_", options: .regularExpression)
-        .replacingOccurrences(of: "_+", with: "_", options: .regularExpression)
-        .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
-}
-
-func filenameContainsBehavior(_ url: URL, behavior: String) -> Bool {
-    let name = normalizedFilenameStem(url)
-    let b = behavior.uppercased()
-        .replacingOccurrences(of: "[^A-Z0-9]+", with: "_", options: .regularExpression)
-        .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
-
-    guard !b.isEmpty, b != "UNKNOWN" else { return false }
-    return name == b || name.contains("_\(b)") || name.contains("\(b)_")
-}
-
 func looksAlreadyNamed(_ url: URL) -> Bool {
-    // Strict fallback check for the full required format:
-    //   StudyID_Day_Test.mp4
-    // Examples:
-    //   GV_T3_129_Baseline_Cylinder.mp4
-    //   GV_T3_12_1_P7_Gridwalk.mp4
-    // Baseline_Cylinder_01.mp4 is NOT considered correctly named because it lacks StudyID.
-    let name = normalizedFilenameStem(url)
+    let name = url.deletingPathExtension().lastPathComponent.uppercased()
 
     let patterns = [
-        #"^[A-Z]{2,4}_T\d+_\d+_\d+_(P\d{1,2}|BASELINE)_[A-Z0-9]+(_\d+)?$"#,
-        #"^[A-Z]{2,4}_T\d+_\d+_(P\d{1,2}|BASELINE)_[A-Z0-9]+(_\d+)?$"#
+        #"^[A-Z]{2,4}_[A-Z]\d+_\d+_\d+_(P\d{1,2}|BASELINE)_[A-Z0-9]+(_\d{2})?$"#,
+        #"^[A-Z]{2,4}_\d+_\d+_\d+_(P\d{1,2}|BASELINE)_[A-Z0-9]+(_\d{2})?$"#,
+        #"^(P\d{1,2}|BASELINE)_[A-Z0-9]+(_\d{2})?$"#
     ]
 
     for pat in patterns {
@@ -242,60 +210,11 @@ func looksAlreadyNamed(_ url: URL) -> Bool {
     return false
 }
 
-func isAlreadyCompleteFilename(_ url: URL, behavior: String, prefixes: [String], maxP: Int) -> Bool {
-    // Conservative early skip used BEFORE OCR. If the filename already contains:
-    //   - a valid StudyID,
-    //   - a valid stage/day,
-    //   - the behavior name,
-    // then OCR must not be used to create a new copy. This protects files such as
-    // GV_T3_12_3_Baseline_Cylinder 3.mp4 from being changed by a bad OCR read.
-    return filenameSubject(url, prefixes: prefixes) != nil
-        && filenameStage(url, maxP: maxP) != nil
-        && filenameContainsBehavior(url, behavior: behavior)
-}
-
-func regexFirst(_ pattern: String, in text: String) -> String? {
-    let re = try! NSRegularExpression(pattern: pattern)
-    let r = NSRange(location: 0, length: text.utf16.count)
-    guard let m = re.firstMatch(in: text, options: [], range: r) else { return nil }
-    return (text as NSString).substring(with: m.range)
-}
-
-func filenameSubject(_ url: URL, prefixes: [String]) -> String? {
-    // Extracts a StudyID from the current filename, if present.
-    // This is treated as ground truth to avoid OCR changing GV_T3_12_1 into GV_T3_129 etc.
-    // Spaces, hyphens and duplicate-copy suffixes are normalized before matching.
-    let name = normalizedFilenameStem(url)
-    let allowed = prefixes.isEmpty ? ["GV", "SP", "SR", "PB", "CC"] : prefixes
-    let prefixGroup = allowed.map { NSRegularExpression.escapedPattern(for: $0) }.joined(separator: "|")
-
-    // Prefer the more specific 4-part subject before the 3-part subject.
-    let patterns = [
-        "(?:^|_)((?:\(prefixGroup))_T\\d+_\\d+_\\d+)(?=_|$)",
-        "(?:^|_)((?:\(prefixGroup))_T\\d+_\\d+)(?=_|$)"
-    ]
-
-    for pat in patterns {
-        let re = try! NSRegularExpression(pattern: pat)
-        let r = NSRange(location: 0, length: name.utf16.count)
-        if let m = re.firstMatch(in: name, options: [], range: r), m.numberOfRanges > 1 {
-            return (name as NSString).substring(with: m.range(at: 1))
-        }
-    }
-
-    return nil
-}
-
-func filenameStage(_ url: URL, maxP: Int) -> String? {
-    let name = url.deletingPathExtension().lastPathComponent.uppercased()
-    return normalizeStage(name, maxP: maxP)
-}
-
 func appendCSV(_ url: URL, _ row: [String]) {
     let fm = FileManager.default
 
     if !fm.fileExists(atPath: url.path) {
-        let header = "\"source\",\"filename_subject\",\"ocr_subject\",\"final_subject\",\"stage\",\"behavior\",\"new_name\",\"action\"\n"
+        let header = "\"source\",\"stage\",\"subject\",\"behavior\",\"new_name\"\n"
         if let data = header.data(using: .utf8) {
             try? data.write(to: url)
         }
@@ -397,18 +316,14 @@ func recognizeTexts(cg: CGImage, orientation: CGImagePropertyOrientation, prefix
     let req = VNRecognizeTextRequest()
 
     req.recognitionLevel = .accurate
-    // Disable language correction because study IDs such as T3_73_7 are not words.
-    // Language correction can silently alter or discard handwritten IDs.
-    req.usesLanguageCorrection = false
+    req.usesLanguageCorrection = true
     req.recognitionLanguages = ["en-US"]
-    req.minimumTextHeight = 0.008
 
     let prefixWords = prefixes
     let tWords = (1...9).map { "T\($0)" }
     let pWords = (1...60).map { "P\($0)" }
-    let digitWords = (1...999).map { "\($0)" }
 
-    req.customWords = ["BASELINE", "STUDY", "ID"] + pWords + prefixWords + tWords + digitWords
+    req.customWords = ["BASELINE"] + pWords + prefixWords + tWords
 
     var out: [(String, Float)] = []
 
@@ -479,69 +394,16 @@ func repairDigitPart(_ s: String) -> String {
     return out
 }
 
-func normalizeSubject(_ text: String, prefixes: [String], defaultPrefix: String) -> String? {
-    // OCR often returns labels as e.g.
-    //   "Study ID: GV T3 129"
-    //   "Animal GV_T3_12_1 Baseline"
-    // The older logic only worked when the OCR string started directly with GV/SP/...,
-    // so files such as Baseline_Cylinder.mp4 were skipped if the visible label
-    // contained additional words before the StudyID. This version searches for the
-    // StudyID anywhere inside the OCR string.
+func normalizeSubject(_ text: String, prefixes: [String]) -> String? {
     var raw = text.uppercased()
 
-    raw = raw.replacingOccurrences(of: "[:;,.]", with: " ", options: .regularExpression)
+    raw = raw.replacingOccurrences(of: "[:;,.]", with: "", options: .regularExpression)
              .replacingOccurrences(of: "[^A-Z0-9]+", with: "_", options: .regularExpression)
              .replacingOccurrences(of: "_+", with: "_", options: .regularExpression)
              .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
 
     let allowed = prefixes.isEmpty ? ["GV", "SP", "SR", "PB", "CC"] : prefixes
-    let prefixGroup = allowed.map { NSRegularExpression.escapedPattern(for: $0) }.joined(separator: "|")
 
-    // Search the normalized OCR line for a complete StudyID anywhere in the text.
-    // Order matters: prefer the more specific 4-part ID before the 3-part ID.
-    let anywherePatterns = [
-        #"(?:^|_)("# + prefixGroup + #")_[A-Z]\d+_\d+_\d+(?=_|$)"#,
-        #"(?:^|_)("# + prefixGroup + #")_[A-Z]\d+_\d+(?=_|$)"#,
-        #"(?:^|_)("# + prefixGroup + #")_\d+_\d+_\d+(?=_|$)"#
-    ]
-
-    for pat in anywherePatterns {
-        let re = try! NSRegularExpression(pattern: pat)
-        let r = NSRange(location: 0, length: raw.utf16.count)
-        if let m = re.firstMatch(in: raw, options: [], range: r) {
-            var hit = (raw as NSString).substring(with: m.range)
-            hit = hit.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
-            return hit
-        }
-    }
-
-    // Many white handwritten labels in the Cylinder videos only contain the study
-    // core, for example "T3-73-7" or "T3_73_7", without the project prefix.
-    // Accept that form and prepend the default prefix, usually GV.
-    let prefixlessPatterns = [
-        #"(?:^|_)(T\d+_\d+_\d+)(?=_|$)"#,
-        #"(?:^|_)(T\d+_\d+)(?=_|$)"#
-    ]
-
-    for pat in prefixlessPatterns {
-        let re = try! NSRegularExpression(pattern: pat)
-        let r = NSRange(location: 0, length: raw.utf16.count)
-        if let m = re.firstMatch(in: raw, options: [], range: r) {
-            let ns = raw as NSString
-            var hit: String
-            if m.numberOfRanges > 1 {
-                hit = ns.substring(with: m.range(at: 1))
-            } else {
-                hit = ns.substring(with: m.range)
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
-            }
-            hit = repairDigitPart(hit)
-            return "\(defaultPrefix)_\(hit)"
-        }
-    }
-
-    // Fallback: if OCR merges the prefix with the next token, repair the digit-ish
-    // part after the prefix and validate again. This preserves the previous behavior.
     guard let prefix = allowed.first(where: { raw.hasPrefix($0 + "_") || raw.hasPrefix($0) }) else {
         return nil
     }
@@ -556,8 +418,9 @@ func normalizeSubject(_ text: String, prefixes: [String], defaultPrefix: String)
     let candidate = prefix + "_" + rest
 
     let patterns = [
-        #"^[A-Z]{2,4}_T\d+_\d+_\d+$"#,
-        #"^[A-Z]{2,4}_T\d+_\d+$"#
+        #"^[A-Z]{2,4}_[A-Z]\d+_\d+_\d+$"#,
+        #"^[A-Z]{2,4}_[A-Z]\d+_\d+$"#,
+        #"^[A-Z]{2,4}_\d+_\d+_\d+$"#
     ]
 
     for pat in patterns {
@@ -568,10 +431,18 @@ func normalizeSubject(_ text: String, prefixes: [String], defaultPrefix: String)
         }
     }
 
+    let fallbackPattern = #"([A-Z]{2,4}_[A-Z]?\d+_\d+_\d+)"#
+    let fallbackRe = try! NSRegularExpression(pattern: fallbackPattern)
+    let r = NSRange(location: 0, length: candidate.utf16.count)
+
+    if let m = fallbackRe.firstMatch(in: candidate, options: [], range: r) {
+        return (candidate as NSString).substring(with: m.range)
+    }
+
     return nil
 }
 
-// ====================== Yellow / white label detector ======================
+// ====================== Yellow sticky detector ======================
 
 struct Box {
     let x0: Int
@@ -580,7 +451,7 @@ struct Box {
     let y1: Int
 }
 
-func labelCrops(from cg: CGImage) -> [CGImage] {
+func yellowCrops(from cg: CGImage) -> [CGImage] {
     let scale = max(1, max(cg.width, cg.height) / 640)
     let Wt = max(1, cg.width / scale)
     let Ht = max(1, cg.height / scale)
@@ -613,20 +484,11 @@ func labelCrops(from cg: CGImage) -> [CGImage] {
             let g = Int(buf[p + 1])
             let b = Int(buf[p + 2])
 
-            let maxRGB = max(r, max(g, b))
-            let minRGB = min(r, min(g, b))
+            let c1 = (r > 170 && g > 170 && b < 195 && abs(r - g) < 65)
+            let c2 = (r > 150 && g > 135 && b < 205 && r > g + 0)
+            let c3 = (r > 130 && g > 120 && (r + g) > (b * 2 + 25))
 
-            // Yellow sticky notes.
-            let yellow1 = (r > 170 && g > 170 && b < 195 && abs(r - g) < 65)
-            let yellow2 = (r > 150 && g > 135 && b < 205 && r > g + 0)
-            let yellow3 = (r > 130 && g > 120 && (r + g) > (b * 2 + 25))
-
-            // White or very light labels/paper.
-            // Keep this conservative to avoid selecting the whole background.
-            let white1 = (r > 190 && g > 190 && b > 185 && (maxRGB - minRGB) < 45)
-            let white2 = (r > 175 && g > 175 && b > 170 && (maxRGB - minRGB) < 30)
-
-            if yellow1 || yellow2 || yellow3 || white1 || white2 {
+            if c1 || c2 || c3 {
                 mask[y * Wt + x] = 255
             }
         }
@@ -746,47 +608,6 @@ func labelCrops(from cg: CGImage) -> [CGImage] {
     return crops
 }
 
-func strategicCrops(from cg: CGImage) -> [CGImage] {
-    // Fallback crops for labels that are white/light on a bright background,
-    // where color segmentation may not find a separate component. These crops are
-    // much cheaper and safer than upscaling the full frame, and they help when the
-    // study label sits on a white sheet rather than a yellow sticky note.
-    let w = cg.width
-    let h = cg.height
-
-    let rects = [
-        // Broad crops.
-        CGRect(x: 0, y: 0, width: w, height: h / 2),
-        CGRect(x: 0, y: h / 2, width: w, height: h / 2),
-        CGRect(x: 0, y: 0, width: w / 2, height: h),
-        CGRect(x: w / 2, y: 0, width: w / 2, height: h),
-
-        // Focused lower-left crops. In many Cylinder recordings the handwritten
-        // white animal label is held at the lower-left edge of the frame.
-        CGRect(x: 0, y: h * 45 / 100, width: w * 45 / 100, height: h * 45 / 100),
-        CGRect(x: 0, y: h * 55 / 100, width: w * 50 / 100, height: h * 35 / 100),
-        CGRect(x: 0, y: h * 60 / 100, width: w * 55 / 100, height: h * 30 / 100),
-        CGRect(x: 0, y: h * 65 / 100, width: w * 60 / 100, height: h * 25 / 100),
-        CGRect(x: 0, y: h * 50 / 100, width: w * 35 / 100, height: h * 35 / 100),
-
-        // Focused upper-left for yellow Baseline/P-stage sticky notes.
-        CGRect(x: 0, y: h * 20 / 100, width: w * 40 / 100, height: h * 45 / 100),
-
-        CGRect(x: w / 10, y: h / 10, width: w * 8 / 10, height: h * 8 / 10),
-        CGRect(x: 0, y: 0, width: w, height: h)
-    ]
-
-    var out: [CGImage] = []
-
-    for rect in rects {
-        if let crop = cg.cropping(to: rect) {
-            out.append(crop)
-        }
-    }
-
-    return out
-}
-
 // ====================== Sampling ======================
 
 func sampleTimes(duration: Double, start: Double, seconds: Double?, step: Double) -> [CMTime] {
@@ -821,7 +642,7 @@ func updateVotes(from cg: CGImage, cfg: Config, stageVotes: inout [String:Int], 
                 stageVotes[st, default: 0] += 1
             }
 
-            if let sj = normalizeSubject(txt, prefixes: cfg.subjectPrefixes, defaultPrefix: cfg.defaultPrefix) {
+            if let sj = normalizeSubject(txt, prefixes: cfg.subjectPrefixes) {
                 subjVotes[sj, default: 0] += 1
             }
         }
@@ -831,19 +652,12 @@ func updateVotes(from cg: CGImage, cfg: Config, stageVotes: inout [String:Int], 
 // ====================== Per-video pipeline ======================
 
 func processVideo(at url: URL, cfg: Config) {
-    let behavior = inferBehavior(from: url, override: cfg.behaviorOverride)
-    let subjectFromFilename = filenameSubject(url, prefixes: cfg.subjectPrefixes)
-    let stageFromFilename = filenameStage(url, maxP: cfg.maxP)
-
-    if !cfg.includeNamed && isAlreadyCompleteFilename(url, behavior: behavior, prefixes: cfg.subjectPrefixes, maxP: cfg.maxP) {
-        print("[SKIP] Already named: \(url.lastPathComponent)")
-        return
-    }
-
     if !cfg.includeNamed && looksAlreadyNamed(url) {
         print("[SKIP] Already named: \(url.lastPathComponent)")
         return
     }
+
+    let behavior = inferBehavior(from: url, override: cfg.behaviorOverride)
 
     let asset = AVURLAsset(url: url)
     let gen = AVAssetImageGenerator(asset: asset)
@@ -857,7 +671,7 @@ func processVideo(at url: URL, cfg: Config) {
     var stageVotes: [String:Int] = [:]
     var subjVotes: [String:Int] = [:]
 
-    // Pass 1: fast yellow/white label crop pass.
+    // Pass 1: fast yellow crop pass.
     let fastTimes = sampleTimes(
         duration: duration,
         start: cfg.startOffset,
@@ -873,7 +687,7 @@ func processVideo(at url: URL, cfg: Config) {
                 return
             }
 
-            let crops = labelCrops(from: cg0)
+            let crops = yellowCrops(from: cg0)
 
             if let dbg = cfg.debugDir, !crops.isEmpty, debugSaved < cfg.debugLimit {
                 try? FileManager.default.createDirectory(at: dbg, withIntermediateDirectories: true)
@@ -896,7 +710,7 @@ func processVideo(at url: URL, cfg: Config) {
         }
     }
 
-    // Pass 2: slower yellow/white label crop retry if either stage or subject is missing.
+    // Pass 2: slower yellow crop retry if either stage or subject is missing.
     if stageVotes.isEmpty || subjVotes.isEmpty {
         let retryTimes = sampleTimes(
             duration: duration,
@@ -911,7 +725,7 @@ func processVideo(at url: URL, cfg: Config) {
                     return
                 }
 
-                let crops = labelCrops(from: cg0)
+                let crops = yellowCrops(from: cg0)
 
                 if let dbg = cfg.debugDir, !crops.isEmpty, debugSaved < cfg.debugLimit {
                     try? FileManager.default.createDirectory(at: dbg, withIntermediateDirectories: true)
@@ -925,35 +739,6 @@ func processVideo(at url: URL, cfg: Config) {
 
                 for crop in crops {
                     let bigCrop = upscaleCGImage(crop, factor: 4)
-                    updateVotes(from: bigCrop, cfg: cfg, stageVotes: &stageVotes, subjVotes: &subjVotes)
-                }
-            }
-
-            if (stageVotes.values.max() ?? 0) >= 2 && (subjVotes.values.max() ?? 0) >= 2 {
-                break
-            }
-        }
-    }
-
-    // Pass 2b: strategic crops if color-based label detection missed a white/light label.
-    if stageVotes.isEmpty || subjVotes.isEmpty {
-        let cropFallbackTimes = sampleTimes(
-            duration: duration,
-            start: cfg.startOffset,
-            seconds: cfg.seconds,
-            step: max(1.0, cfg.step)
-        )
-
-        for t in cropFallbackTimes {
-            autoreleasepool {
-                guard let cg0 = generateCGImageSync(gen, at: t) else {
-                    return
-                }
-
-                for crop in strategicCrops(from: cg0) {
-                    // Moderate upscale: improves OCR on labels without the memory cost
-                    // of full-frame 4x upscaling.
-                    let bigCrop = upscaleCGImage(crop, factor: 3)
                     updateVotes(from: bigCrop, cfg: cfg, stageVotes: &stageVotes, subjVotes: &subjVotes)
                 }
             }
@@ -989,32 +774,20 @@ func processVideo(at url: URL, cfg: Config) {
         }
     }
 
-    let stageFromOCR = stageVotes.max(by: { $0.value < $1.value })?.key
-    guard let bestStage = stageFromFilename ?? stageFromOCR else {
+    guard let bestStage = stageVotes.max(by: { $0.value < $1.value })?.key else {
         print("[SKIP] No valid stage: \(url.path)")
-        if let csv = cfg.csv {
-            appendCSV(csv, [url.lastPathComponent, subjectFromFilename ?? "", "", "", "", behavior, "", "skip_no_stage"])
-        }
         return
     }
 
-    let subjectFromOCR = subjVotes.max(by: { $0.value < $1.value })?.key
-
-    if let f = subjectFromFilename, let o = subjectFromOCR, f != o {
-        print("[WARN] OCR subject conflict ignored: filename=\(f) detected=\(o) file=\(url.lastPathComponent)")
-    }
-
-    guard let finalSubject = subjectFromFilename ?? subjectFromOCR else {
-        // This catches files such as Baseline_Cylinder_01.mp4 when the StudyID could not be read.
-        print("[SKIP] No valid StudyID: \(url.path)")
-        if let csv = cfg.csv {
-            appendCSV(csv, [url.lastPathComponent, subjectFromFilename ?? "", subjectFromOCR ?? "", "", bestStage, behavior, "", "skip_no_study_id"])
-        }
-        return
-    }
-
+    let subject = subjVotes.max(by: { $0.value < $1.value })?.key
     let ext = url.pathExtension.isEmpty ? "" : "." + url.pathExtension.lowercased()
-    let newBase = "\(finalSubject)_\(bestStage)_\(behavior)\(ext)"
+
+    let newBase: String
+    if let subject = subject {
+        newBase = "\(subject)_\(bestStage)_\(behavior)\(ext)"
+    } else {
+        newBase = "\(bestStage)_\(behavior)\(ext)"
+    }
 
     let parent = url.deletingLastPathComponent()
 
@@ -1028,23 +801,18 @@ func processVideo(at url: URL, cfg: Config) {
 
     if cfg.dryRun {
         print("[DRY] \(url.lastPathComponent) -> \(dst.lastPathComponent)")
-        if let csv = cfg.csv {
-            appendCSV(csv, [url.lastPathComponent, subjectFromFilename ?? "", subjectFromOCR ?? "", finalSubject, bestStage, behavior, finalName, "dry"])
-        }
         return
     }
 
     do {
         try FileManager.default.copyItem(at: url, to: dst)
         print("[COPIED] \(url.lastPathComponent) -> \(dst.lastPathComponent)")
-        if let csv = cfg.csv {
-            appendCSV(csv, [url.lastPathComponent, subjectFromFilename ?? "", subjectFromOCR ?? "", finalSubject, bestStage, behavior, finalName, "copied"])
-        }
     } catch {
         print("[ERROR] copy: \(error.localizedDescription)")
-        if let csv = cfg.csv {
-            appendCSV(csv, [url.lastPathComponent, subjectFromFilename ?? "", subjectFromOCR ?? "", finalSubject, bestStage, behavior, finalName, "error_copy"])
-        }
+    }
+
+    if let csv = cfg.csv {
+        appendCSV(csv, [url.lastPathComponent, bestStage, subject ?? "", behavior, finalName])
     }
 }
 
@@ -1067,7 +835,6 @@ if let cfg = parseArgs() {
           includeNamed=\(cfg.includeNamed)
           fullFrameFallback=\(cfg.fullFrameFallback)
           prefixes=\(prefixes)
-          defaultPrefix=\(cfg.defaultPrefix)
           csv=\(cfg.csv?.path ?? "nil")
           debugDir=\(cfg.debugDir?.path ?? "nil")
           debugLimit=\(cfg.debugLimit)
@@ -1092,10 +859,9 @@ if let cfg = parseArgs() {
       swift VideoIdentFileName.swift <root-folder> [options]
 
     Default behavior:
-      Recursively scans <root-folder>, finds all video files, reads yellow or white/light labels, accepts prefix-less handwritten IDs such as T3_73_7, uses OCR fallback crops,
+      Recursively scans <root-folder>, finds all video files, reads yellow sticky notes,
       infers the behavior from the folder path, and writes a corrected copy next to
-      each original video. Files are considered already named only if they follow:
-      StudyID_Day_Test.mp4, e.g. GV_T3_129_Baseline_Cylinder.mp4.
+      each original video.
 
     Examples:
       ./VideoIdentFileName "/Volumes/.../Behavior"
@@ -1127,10 +893,6 @@ if let cfg = parseArgs() {
       --subject-prefixes "GV,SP,SR,PB,CC"
           Allowed study ID prefixes. Default: GV,SP,SR,PB,CC.
 
-      --default-prefix <prefix>
-          Prefix used when the visible handwritten label contains only the core ID,
-          e.g. T3_73_7. Default: first subject prefix, usually GV.
-
       --max-p <N>
           Accept P1..PN. Default: 60.
 
@@ -1150,7 +912,7 @@ if let cfg = parseArgs() {
           Write an audit CSV.
 
       --debug-dir <folder>
-          Save yellow/white label crops for inspection.
+          Save yellow-note crops for inspection.
 
       --debug-limit <N>
           Max debug crops per video. Default: 20.

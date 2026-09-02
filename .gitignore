@@ -1,0 +1,24 @@
+# macOS and IDE metadata
+.DS_Store
+.idea/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Runtime logs and generated state
+*.log
+Assign_Speaker_LabMeeting/assignments.txt
+Assign_Speaker_LabMeeting/history.json
+DataLad/annex_unused_report.tsv
+
+# Generated citation reports
+CitationsReport/openalex_citations_output/
+
+# Large local video fixtures and compiled binaries
+CropVideo_mulitpleFiles_option/examplevideos/
+CropVideo_singleFiles/*.mp4
+IdentifyVideoFileName/examples/
+IdentifyVideoFileName/VideoIdentFileName

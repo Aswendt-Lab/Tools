@@ -1,3 +1,14 @@
+""""
+Created on 05.11.2025
+
+@authors: Markus Aswendt, ChatGPT
+Department of Neurology
+University Hospital Frankfurt
+Theodor-Stern-Kai 7
+D-60590 Frankfurt am Main
+
+"""
+
 #!/usr/bin/env python3
 """
 Scan videos, read labels in the first 100 seconds, and build a new file name.

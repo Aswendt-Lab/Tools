@@ -1,178 +1,50 @@
-# DataLad Helper Scripts
+# DataLad helper scripts
 
-This repository contains helper scripts for working with large files and folders in existing DataLad datasets.
+Utilities for uploading, preparing, checking, and comparing DataLad/git-annex datasets. These scripts can transfer large amounts of data and some run `drop`; verify remotes and backups before use.
 
-## Scripts
+## Upload scripts
 
-### `Datalad_stepwise`
-Bash script to **replace zip files, unzip them, and upload the extracted content again** in a controlled, stepwise workflow.
-
-Main purpose:
-- get file content locally
-- unlock files
-- manually unzip and inspect
-- save changes
-- push to remote
-- drop content again safely
-
-### `DataLadUpload`
-Script for **uploading data** to a DataLad dataset.
-
----
-
-# Sequential DataLad Stepwise Workflow
-
-`Datalad_stepwise` is designed for folders that contain **many DataLad datasets** and allows processing either:
-
-- **one selected dataset**
-- or **all datasets in the parent folder**
-
-It is especially useful when zip files inside a dataset need to be replaced by their extracted folder contents in a **controlled sequential workflow**.
-
----
-
-## ✨ Key Features
-
-- ✅ Detects DataLad datasets inside a parent folder
-- ✅ Lets the user choose **one dataset or all datasets**
-- ✅ Works in **two separate modes per dataset**
-- ✅ Processes files **strictly sequentially**
-- ✅ Ensures **`datalad get` finishes before `datalad unlock` starts**
-- ✅ Pauses after a configurable batch size in Mode A
-- ✅ Uses safe order for upload workflow: **save → push → drop**
-- ✅ Uses `datalad drop --force` where needed
-
----
-
-## 🧠 Workflow Logic
-
-For each selected dataset, the user can choose between:
-
-### Mode A — `datalad get` + `datalad unlock`
-This mode prepares files for manual work.
-
-Workflow:
-1. process files one by one
-2. run `datalad get` on a file
-3. wait until `get` is complete
-4. run `datalad unlock` on the same file
-5. continue with the next file only after both steps finish
-
-This is useful before manually:
-- unzipping archives
-- inspecting content
-- replacing zip files with extracted folders
-
-### Mode B — `datalad save` + `push` + `drop`
-This mode uploads the modified content back to the remote.
-
-Workflow:
-1. save dataset changes
-2. push to remote (`origin`)
-3. drop local content only after push
-
-This follows the recommended git-annex/DataLad logic:
-
-**save → push → drop**
-
----
-
-## 📦 Requirements
-
-- Bash
-- DataLad
-- git-annex
-- A DataLad dataset with a configured remote such as `origin`
-
-Verify setup with:
+`DataLadUpload_v1.py` and `v2.py` are historical upload workflows. `DataLadUpload_v3.py` is the current sequential uploader. It finds folders at an exact depth below a dataset root, processes only folders of at least 5 GiB, and performs `datalad save`, `datalad push --to origin`, then `datalad drop --what filecontent --recursive`.
 
 ```bash
-datalad --version
-git annex version
-bash --version
+python DataLadUpload_v3.py -i /path/to/dataset -d 2
 ```
 
-> Note: the script was adapted to work on older macOS Bash versions as well, where features like `mapfile` are unavailable.
+The depth is the number of wildcard directory levels below the initial path. Processing aborts on the first failed save, push, or drop.
 
----
+## Stepwise workflows
 
-## 🚀 Usage
+`Datalad_stepwise_v5.sh` discovers immediate child datasets and interactively runs either:
 
-### Run on a folder containing multiple datasets
+- mode A: sequential `get` then `unlock` for each file; or
+- mode B: `save`, `push`, then forced `drop`.
+
+Its fixed batch size is currently 100 files.
 
 ```bash
-chmod +x Datalad_stepwise_v5.sh
-./Datalad_stepwise_v5.sh /path/to/folder/with/datasets
+./Datalad_stepwise_v5.sh /path/containing/datasets
 ```
 
-The script will:
-1. detect datasets in the given parent folder
-2. ask whether to process one dataset or all datasets
-3. ask for each dataset whether to run:
-   - `A` = get + unlock
-   - `B` = save + push + drop
-   - `S` = skip
+`Datalad_stepwise_v6.sh` implements the same modes but prompts for the batch size. `Datalad_stepwise_v2.sh` is an older project-specific script with a hard-coded relative base directory and should be reviewed before use.
 
----
+## Inspection and comparison
 
-## ⚙️ Batch Size
-
-In Mode A, the script pauses after every defined number of processed files.
-
-Current default:
+`check_annex_unused_recursive.sh` discovers nested Git/DataLad datasets, runs `git annex unused`, and writes a TSV report:
 
 ```bash
-BATCH_SIZE=5
+./check_annex_unused_recursive.sh /path/to/root annex_unused_report.tsv
 ```
 
-That means:
-- 5 files are processed sequentially
-- then the script pauses
-- the user can inspect/unzip/verify before continuing
+It reports unused objects but does not remove them.
 
----
+`compare_local_remote_GIN_repos.sh` compares immediate local directories with repositories in the configured GIN organization and can interactively clone missing repositories:
 
-## 🔐 Why this workflow is useful
+```bash
+./compare_local_remote_GIN_repos.sh /path/to/local/repos
+```
 
-Large datasets and annexed content can be error-prone if handled too quickly or in the wrong order.
+It requires `curl`, `jq`, DataLad, Git, and a GIN token. The organization and token-file path are currently hard-coded near the top and must be adapted for another account or computer.
 
-This workflow helps avoid:
-- unlocking files before content is present
-- pushing incomplete changes
-- dropping content before it exists on the remote
-- running too many heavy operations at once
+## Requirements
 
----
-
-## ⚠️ Notes & Caveats
-
-- The script operates on files inside already existing DataLad datasets.
-- Many DataLad-tracked files may appear as symlinks; the script accounts for that.
-- Mode A is intentionally sequential and can take a long time.
-- Manual unzipping or inspection is expected between preparation and upload.
-- `drop --force` is powerful and should only be used when you are sure the pushed content is safely available remotely.
-- The remote must be reachable and writable.
-
----
-
-## Example Use Case
-
-A common use case is:
-
-1. dataset contains `.zip` files tracked by DataLad
-2. run **Mode A** to get and unlock the files
-3. manually unzip and replace the zip files with extracted folders
-4. run **Mode B** to save, push, and drop content again
-
----
-
-## Related Script
-
-### `DataLadUpload`
-Use this script when the main goal is simply:
-
-- uploading data
-- saving changes
-- pushing content to the configured remote
-
-without the stepwise get/unlock preparation workflow.
+Install DataLad and git-annex and configure the required remotes before use. Bash scripts expect a Unix-like environment; some interactive scripts are specifically written for the older Bash shipped with macOS.

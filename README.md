@@ -29,3 +29,7 @@ Helper scripts for AIDA data management, MRI processing, behavioral video proces
 | [`reset_naming`](reset_naming/) | Apply a project-specific rename transformation to stroke-mask files. |
 
 Each folder has its own README with requirements, usage, outputs, and safety notes. Several tools modify, move, or delete data; test them on a copy first.
+
+## Data management plan
+
+The [Aswendt Lab Data Management Plan](DataManagement/AswendtLab_Data_Management_Plan_v1.md) ([PDF](output/pdf/AswendtLab_Data_Management_Plan_v1.pdf)) covers raw-data storage in Server / Projects, active local DataLad publication datasets synchronized with GIN, and read-only use of the automated Publications_GIN mirror and Server / Publications backup. It includes the lab SOP references and folder-structure illustrations.

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>org.gin-mirror</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/path/to/DataLad/Datalad_GIN_Mirror_v5.sh</string>
+    <string>--root</string>
+    <string>/Volumes/Publications_GIN</string>
+    <string>--apply</string>
+    <string>--verify</string>
+    <string>--scheduled</string>
+    <string>--gin-token-file</string>
+    <string>/path/to/private/token-file</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/path/to/datalad/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>2</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/path/to/Library/Logs/gin-mirror.log</string>
+  <key>StandardErrorPath</key>
+  <string>/path/to/Library/Logs/gin-mirror.log</string>
+</dict>
+</plist>

@@ -14,6 +14,58 @@ The depth is the number of wildcard directory levels below the initial path. Pro
 
 ## One-way GIN mirror
 
+### Download and verify all datasets with v5
+
+From `Publications_GIN`, run the updated [`Datalad_GIN_Mirror_v5.sh`](Datalad_GIN_Mirror_v5.sh) copy. The mirror root must contain the `.datalad-one-way-mirror` marker. Run this after any existing mirror job finishes.
+
+```bash
+bash ./Datalad_GIN_Mirror_v5.sh --root "$PWD" --apply --verify --no-unlock
+```
+
+Omitting `--dataset` processes every immediate, non-hidden child Git repository. Add `--dataset NAME` with the exact dataset directory name to process a single dataset. The script fetches from `origin` and updates the checked-out branch when it can fast-forward. `--no-unlock` skips the unlock step.
+
+With `--apply --verify`, v5 scans all annexed paths, including unlocked files, for missing local content. It attempts to retrieve missing scientific files with DataLad, tries `origin` for files still missing, and scans again to report what remains. This checks local availability. `--verify` alone previews the operation, and `FAST_COMPLETE` from a run without verification covers only locked annex symlinks.
+
+During a download batch, v5 prints a progress bar about every 15 seconds and a final count when the batch finishes. The bar counts files whose content is available locally. A large file can be transferring while the count stays steady.
+
+The results are recorded under `.mirror_logs/` in the mirror root:
+
+- `mirror_summary.csv` lists the latest status and missing counts per dataset.
+- `<dataset>.log` contains the per-dataset run output, including the final `RESULT` line.
+- `missing_files/<dataset>_scientific.txt` and `missing_files/<dataset>_metadata.txt` list the paths still missing after the scan.
+
+`COMPLETE` means the final scan found all annex content locally. `COMPLETE_WITH_WARNINGS` means only files classified as macOS metadata artifacts are missing. `INCOMPLETE` means scientific content is still missing or an operation failed.
+
+### Set up a GIN API token
+
+1. Sign in with a GIN account that can read the repositories you want to mirror. Open **Your Settings → Applications** and choose **Generate New Token**. [GIN application settings](https://gin.g-node.org/user/settings/applications)
+2. Save only the generated token in a plain-text file outside the Git checkout. Use a file readable only by your account, for example with `chmod 600 /path/to/private/token-file`.
+3. Pass the file path with `--gin-token-file /path/to/private/token-file` or set `GIN_TOKEN_FILE` to that path. For a scheduled run, set the path in the installed LaunchAgent.
+
+v5 reads the owner or organization and repository from each dataset's `origin` at `gin.g-node.org` and uses the API token for HTTPS fetches. When HTTPS cannot retrieve annex content, v5 retries through the configured origin. An SSH origin requires a key available to the SSH agent for unattended downloads.
+
+### Scheduled v5 mirror on macOS
+
+The [LaunchAgent template](org.gin-mirror.plist) checks daily at 02:30 local time and runs `--apply --verify --scheduled` on `/Volumes/Publications_GIN` when at least two calendar days have passed since its last scheduled start. The mounted mirror root must contain the marker file. Each run downloads missing scientific content and unlocks locally available annex symlinks. The calendar check runs in the user's macOS login session.
+
+On the target Mac, copy the template from the `DataLad` folder into your LaunchAgents directory.
+
+```bash
+mkdir -p "$HOME/Library/LaunchAgents"
+install -m 0644 org.gin-mirror.plist "$HOME/Library/LaunchAgents/"
+```
+
+Edit the installed copy to replace the placeholders for the script, token file, DataLad bin directory, and both log paths. Use absolute paths and adjust the mirror root if needed. Then validate and load the configured copy.
+
+```bash
+agent="$HOME/Library/LaunchAgents/org.gin-mirror.plist"
+plutil -lint "$agent" && launchctl bootstrap "gui/$(id -u)" "$agent"
+```
+
+Check `~/Library/Logs/gin-mirror.log` for scheduled job output and `.mirror_logs/mirror_summary.csv` in the mirror root for per-dataset results. Unlocking can leave tracked changes. If GIN advances and tracked changes block the update, the scheduled run reports that dataset as incomplete and continues with the others.
+
+### v2 reference
+
 [`Datalad_GIN_Mirror_v2.sh`](Datalad_GIN_Mirror_v2.sh) updates existing mirror datasets from `origin`, downloads missing annex content, and unlocks locally available annex files in batches. It supports macOS Bash 3.2 and never runs `save`, `push`, or `drop`. Use it only for dedicated mirror copies.
 
 The script scans immediate, non-hidden child directories of the mirror root that contain a `.git` entry. It does not clone missing repositories or recursively process subdatasets. Each dataset must have a checked-out branch with a matching branch on `origin`, initialized git-annex, and working credentials for fetching and downloading content.
@@ -101,7 +153,7 @@ It reports unused objects but does not remove them.
 ./compare_local_remote_GIN_repos.sh /path/to/local/repos
 ```
 
-It requires `curl`, `jq`, DataLad, Git, and a GIN token. The organization and token-file path are currently hard-coded near the top and must be adapted for another account or computer.
+It requires `curl`, `jq`, DataLad, Git, and a GIN API token. Set `GIN_ORG` to your GIN organization name and `GIN_TOKEN_FILE` to the path of your private token file.
 
 ## Requirements
 

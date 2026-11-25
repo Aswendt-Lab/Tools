@@ -2,9 +2,9 @@
 set -euo pipefail
 
 LOCAL_DIR="${1:-.}"
-ORG_NAME="Aswendt_Lab"
+ORG_NAME="${GIN_ORG:?Set GIN_ORG to the name of your GIN organization}"
 GIN_API="https://gin.g-node.org/api/v1"
-TOKEN_FILE="/Users/maswendt/SynologyDrive/Transfer/GIN.txt"
+TOKEN_FILE="${GIN_TOKEN_FILE:?Set GIN_TOKEN_FILE to the path of your local GIN API token file}"
 
 if ! command -v curl >/dev/null 2>&1; then
   echo "❌ 'curl' is required."
